@@ -59,6 +59,41 @@ python main.py status
 Indexes persist to `storage/index/` and the query cache to `storage/cache/`, so ingestion is
 a one-time step — later `query`/`chat` runs load straight from disk.
 
+### Voice agent (JARVIS HUD)
+
+A browser voice HUD ([web/jarvis.html](web/jarvis.html)) drives the same pipeline by speech —
+ask a question out loud, watch the ring go to *PARSING* while the pipeline retrieves, then hear
+the answer spoken back with its sources listed under the reply in the transcript.
+
+```bash
+python main.py serve                          # http://localhost:8000  (JARVIS_PORT overrides)
+# or, for auto-reload during development:
+uvicorn api.server:app --reload --port 8000
+# then open http://localhost:8000 in Chrome and allow the microphone
+```
+
+[api/server.py](api/server.py) is a thin adapter over `RAGPipeline` — it builds the pipeline
+**once** at startup and runs the blocking `query` in a threadpool so concurrent requests don't
+stall the event loop.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET`  | `/`           | serve the JARVIS HUD |
+| `POST` | `/api/ask`    | `{"question": str, "use_memory": bool}` → `{"text", "full", "cached", "sources": [{"filename", "chunk_index", "score"}]}` (spoken `text` capped at ~600 chars; `full` is untruncated) |
+| `GET`  | `/api/status` | `pipeline.status()` |
+
+On any pipeline error the API returns `{"text": "I lost the link to the index — try again.",
+"error": true}` (HTTP 200) so the HUD stays in character. CORS is restricted to `http://localhost`
+/ `http://127.0.0.1` (any port).
+
+Speech-to-text and text-to-speech use the **browser's built-in Web Speech API** — no API keys,
+no audio leaves the machine (STT works best in Chrome). Local UI voice-commands (focus mode,
+panel toggles, clear log, mute, diagnostics) stay in the browser and never hit the server.
+
+> **Offline fallback:** the HUD still opens as a plain file with no server — it falls back to its
+> built-in reply table, and pressing **SPACE** runs a scripted demo. To point it at a different
+> API, set `window.JARVIS_API = { url, enabled }` in the page.
+
 ---
 
 ## Configuration
@@ -107,7 +142,9 @@ python main.py query "..."
 | [core/memory.py](core/memory.py) | Sliding-window conversation memory |
 | [core/llm.py](core/llm.py) | `ExtractiveLLM` / `GeminiLLM` / `OllamaLLM` behind `BaseLLM` |
 | [rag/pipelines.py](rag/pipelines.py) | `RAGPipeline` — wires everything together |
-| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` |
+| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` / `serve` |
+| [api/server.py](api/server.py) | FastAPI adapter: serves the HUD + `POST /api/ask`, `GET /api/status` |
+| [web/jarvis.html](web/jarvis.html) | JARVIS voice HUD (Web Speech API, self-contained) |
 
 ### Extending
 

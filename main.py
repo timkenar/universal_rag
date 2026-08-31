@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -85,6 +86,18 @@ def cmd_status(pipeline: RAGPipeline, args) -> None:
         _print(f"  {key:20s}: {value}")
 
 
+def cmd_serve(pipeline: RAGPipeline, args) -> None:
+    """Boot the FastAPI app that serves the JARVIS HUD + REST API.
+
+    The pipeline is built inside the app (via its lifespan hook), so this
+    command intentionally does not use the ``pipeline`` argument.
+    """
+    import uvicorn
+
+    _print(f"Serving JARVIS HUD on http://localhost:{args.port}  (Ctrl-C to stop)")
+    uvicorn.run("api.server:app", host="127.0.0.1", port=args.port, reload=args.reload)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Universal RAG system CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -103,12 +116,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Show index / provider info")
     p_status.set_defaults(func=cmd_status)
 
+    p_serve = sub.add_parser("serve", help="Serve the JARVIS HUD + REST API")
+    p_serve.add_argument(
+        "--port", type=int, default=int(os.getenv("JARVIS_PORT", "8000")),
+        help="Port to serve on (default: $JARVIS_PORT or 8000)",
+    )
+    p_serve.add_argument(
+        "--reload", action="store_true", help="Auto-reload on code changes (dev)"
+    )
+    # serve builds its own pipeline inside the app; skip the CLI-level build.
+    p_serve.set_defaults(func=cmd_serve, needs_pipeline=False)
+
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    pipeline = RAGPipeline(Config())
+    pipeline = RAGPipeline(Config()) if getattr(args, "needs_pipeline", True) else None
     args.func(pipeline, args)
 
 

@@ -7,6 +7,10 @@ pypdf>=4.0                     # PDF loader
 python-dotenv>=1.0            # .env loading
 rich>=13.0                    # pretty CLI output
 
+# --- API server (serves web/jarvis.html + REST API) ---
+fastapi>=0.110               # REST API wrapping the RAG pipeline
+uvicorn[standard]>=0.29      # ASGI server to run FastAPI (standard = --reload support)
+
 # --- Optional loaders (universal ingestion) ---
 beautifulsoup4>=4.12           # HTML loader
 python-docx>=1.1              # DOCX loader
