@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis Voice Animation</title>
+    <style>
+        /* Sci-Fi dark backdrop */
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050b14;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        /* Container to stack the glowing holographic rings */
+        .jarvis-container {
+            position: relative;
+            width: 300px;
+            height: 300px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        /* Outer constant rotating ring */
+        .outer-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px dashed #00e5ff;
+            border-radius: 50%;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
+            animation: rotateOuter 10s linear infinite;
+        }
+
+        /* Inner reactive orb that jumps when you speak */
+        .reactive-core {
+            position: absolute;
+            width: 60%;
+            height: 60%;
+            background: radial-gradient(circle, rgba(0,229,255,0.8) 0%, rgba(0,162,255,0.2) 70%, transparent 100%);
+            border: 4px solid #00e5ff;
+            border-radius: 50%;
+            box-shadow: 0 0 30px #00e5ff, inset 0 0 20px #00e5ff;
+            transition: transform 0.05s ease-out; /* Keeps animation snappy and fluid */
+            transform: scale(1);
+        }
+
+        /* Status UI text overlay */
+        .status-text {
+            position: absolute;
+            color: #00e5ff;
+            bottom: -50px;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-shadow: 0 0 8px #00e5ff;
+        }
+
+        /* Ambient spinning for the outer technological ring */
+        @keyframes rotateOuter {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="jarvis-container" id="startButton">
+        <div class="outer-ring"></div>
+        <div class="reactive-core" id="core"></div>
+        <div class="status-text" id="status">CLICK TO INITIALIZE JARVIS</div>
+    </div>
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const core = document.getElementById('core');
+        const statusText = document.getElementById('status');
+        
+        let audioContext;
+        let analyser;
+        let microphone;
+        let dataArray;
+        let isInitialized = false;
+
+        // Initialize audio recording upon explicit user gesture (browser security requirement)
+        startButton.addEventListener('click', async () => {
+            if (isInitialized) return;
+            
+            try {
+                // 1. Request user mic permission
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                statusText.innerText = "JARVIS: LISTENING...";
+                
+                // 2. Set up Web Audio API nodes
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                
+                // Connect microphone straight to analyzer (do not connect to destination to avoid echo feedback loop)
+                microphone.connect(analyser);
+                
+                // Fast Fourier Transform (FFT) size for frequency determinations
+                analyser.fftSize = 256; 
+                const bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+                
+                isInitialized = true;
+                updateAnimation();
+                
+            } catch (err) {
+                statusText.innerText = "ERROR: MIC ACCESS DENIED";
+                console.error("Microphone access error:", err);
+            }
+        });
+
+        // 3. Loop function updating layout frames dynamically based on volume levels
+        function updateAnimation() {
+            if (!isInitialized) return;
+            
+            requestAnimationFrame(updateAnimation);
+            
+            // Extract raw volume frequency values into our array
+            analyser.getByteFrequencyData(dataArray);
+            
+            // Calculate standard average volume (amplitude) 
+            let total = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                total += dataArray[i];
+            }
+            const averageVolume = total / dataArray.length;
+            
+            // Normalize volume into a smooth multiplier scale (Base size 1.0 + audio boost)
+            // Cap the scale multiplier limit to prevent excessive over-stretching distortions
+            const maxScaleBoost = 0.7;
+            const dynamicScale = 1 + Math.min((averageVolume / 128), maxScaleBoost);
+            
+            // 4. Update the CSS transform properties instantly
+            core.style.transform = `scale(${dynamicScale})`;
+            
+            // Give a boost to inner glow brightness proportional to audio intensity
+            core.style.boxShadow = `0 0 ${30 + (averageVolume * 0.5)}px #00e5ff, inset 0 0 20px #00e5ff`;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# --- Core (required, offline-capable) ---
+numpy>=1.24
+sentence-transformers>=2.6      # local embeddings + cross-encoder reranker
+faiss-cpu>=1.8                  # dense vector index
+rank-bm25>=0.2.2               # sparse lexical index
+pypdf>=4.0                     # PDF loader
+python-dotenv>=1.0            # .env loading
+rich>=13.0                    # pretty CLI output
+
+# --- Optional loaders (universal ingestion) ---
+beautifulsoup4>=4.12           # HTML loader
+python-docx>=1.1              # DOCX loader
+
+# --- Optional: query cache backend (falls back to stdlib shelve if absent) ---
+diskcache>=5.6
+
+# --- Optional: providers (uncomment to enable) ---
+# google-genai>=0.3            # Gemini embeddings + LLM (needs GEMINI_API_KEY)
+# requests>=2.31               # Ollama LLM (needs a local Ollama server)
