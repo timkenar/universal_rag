@@ -96,6 +96,71 @@ panel toggles, clear log, mute, diagnostics) stay in the browser and never hit t
 
 ---
 
+## Testing
+
+There is no automated test suite yet — verification is a manual smoke test in two layers: the
+**CLI pipeline** first (retrieval → rerank → LLM), then the **HUD + API** on top. Everything below
+runs fully offline on the defaults (`LLM_PROVIDER=none`), so no API key is needed.
+
+### 0. One-time setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+> The first `ingest`/`query` downloads the embedding + reranker models (~170 MB) from Hugging
+> Face; it needs internet **once**, then runs offline. A sample document lives at
+> [files/sample.md](files/sample.md) so you have something to query immediately.
+
+### 1. CLI pipeline
+
+```bash
+python main.py ingest files/                              # index the sample doc
+python main.py status                                     # dense_vectors should be > 0
+python main.py query "How long can Project Aurora stay aloft?"
+python main.py query "Who leads the program?"
+python main.py chat                                       # then: "and where is the avionics team?"
+```
+
+**What confirms it works:**
+- Each answer lists a `[sample.md]` source line — retrieval is grounding on the doc.
+- *"How long can it stay aloft?"* surfaces the **45 days** fact even though the doc says
+  "endurance," not "aloft" — that's semantic (dense) retrieval, not keyword matching.
+- A `chat` follow-up that only makes sense given the previous turn (e.g. *"and where is the
+  avionics team?"*) proves conversation memory is in play.
+
+### 2. Spin up JARVIS (HUD + API)
+
+```bash
+python main.py serve                                      # http://localhost:8000
+# JARVIS_PORT=9000 python main.py serve                   # override the port
+# uvicorn api.server:app --reload --port 8000             # dev mode, auto-reload
+```
+
+Verify the API without a microphone (note: `use_memory` is optional, defaults to `true`):
+
+```bash
+curl localhost:8000/api/status
+curl -X POST localhost:8000/api/ask -H 'Content-Type: application/json' \
+  -d '{"question":"What is the wingspan?"}'
+```
+
+A healthy `/api/ask` reply is JSON with `text` (spoken, capped at ~600 chars), `full`
+(untruncated), `cached`, and a `sources` array. If the index is missing you get
+`{"text":"I lost the link to the index — try again.","error":true}` — run step 1 first.
+
+### 3. Full voice test
+
+Open `http://localhost:8000` in **Chrome**, allow the microphone, and speak
+*"What is the maximum endurance?"* You should see the question transcribed, the ring move to
+*PARSING*, then hear the answer spoken back with its sources listed under the reply.
+
+> Ingestion is **CLI-only** — the API exposes `/api/ask` and `/api/status` but no ingest
+> endpoint, so add new documents with `python main.py ingest <path>` before querying them.
+
+---
+
 ## Configuration
 
 All knobs live in [config.py](config.py) and can be overridden by environment variables
