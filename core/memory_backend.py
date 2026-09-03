@@ -69,6 +69,27 @@ class BaseMemoryBackend(ABC):
         """Vault note paths, for index-backed backends. Empty otherwise."""
         return []
 
+    # --- Standing context (always injected, never retrieval-gated) ----------
+    def persistent_context(self) -> str:
+        """Identity/persona/pinned facts injected into *every* prompt's system
+        message, regardless of the query. Empty string when none is set."""
+        return ""
+
+    def pin(self, text: str, title: str = "identity") -> Optional[Path]:
+        """Store an always-on context entry (default title = the identity).
+
+        Returns the written note path for vault backends, ``None`` otherwise.
+        Backends that don't support pinning return ``None``.
+        """
+        return None
+
+    def clear_identity(self) -> bool:
+        """Remove the identity entry. Returns True if one existed."""
+        return False
+
+    def has_identity(self) -> bool:
+        return bool(self.persistent_context().strip())
+
     def name(self) -> str:
         return self.__class__.__name__
 

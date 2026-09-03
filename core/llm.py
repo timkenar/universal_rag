@@ -26,9 +26,18 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_prompt(question: str, contexts: List[str], history: str = "") -> str:
+def _system_block(system: str) -> str:
+    """SYSTEM_PROMPT plus any always-on persistent context (identity/persona)."""
+    if system and system.strip():
+        return f"{SYSTEM_PROMPT}\n\n{system.strip()}"
+    return SYSTEM_PROMPT
+
+
+def build_prompt(
+    question: str, contexts: List[str], history: str = "", system: str = ""
+) -> str:
     numbered = "\n\n".join(f"[{i + 1}] {c}" for i, c in enumerate(contexts))
-    parts = [SYSTEM_PROMPT, ""]
+    parts = [_system_block(system), ""]
     if history:
         parts += ["Conversation so far:", history, ""]
     parts += ["Context:", numbered, "", f"Question: {question}", "", "Answer:"]
@@ -36,12 +45,13 @@ def build_prompt(question: str, contexts: List[str], history: str = "") -> str:
 
 
 def build_messages(
-    question: str, contexts: List[str], history: str = ""
+    question: str, contexts: List[str], history: str = "", system: str = ""
 ) -> List[Dict[str, str]]:
     """Chat-format variant: system prompt + a single user turn with context.
 
     Used by chat-completion providers (OpenAI, NVIDIA, ...) where separating the
-    system role from the user content yields better instruction-following.
+    system role from the user content yields better instruction-following. Any
+    persistent context (identity/persona) is folded into the system role.
     """
     numbered = "\n\n".join(f"[{i + 1}] {c}" for i, c in enumerate(contexts))
     user_parts = []
@@ -49,24 +59,33 @@ def build_messages(
         user_parts += ["Conversation so far:", history, ""]
     user_parts += ["Context:", numbered, "", f"Question: {question}"]
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _system_block(system)},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
 
 
 class BaseLLM(ABC):
     @abstractmethod
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
         ...
 
 
 class ExtractiveLLM(BaseLLM):
-    """No-LLM fallback: return the most relevant passages with citations."""
+    """No-LLM fallback: return the most relevant passages with citations.
+
+    There is no generation step here, so persistent ``system`` context (identity/
+    persona) is accepted for interface parity but has no effect — set a real LLM
+    provider for the identity to shape answers.
+    """
 
     def __init__(self, max_passages: int = 3):
         self.max_passages = max_passages
 
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
         if not contexts:
             return "I couldn't find anything relevant in the indexed documents."
         lines = [
@@ -93,10 +112,12 @@ class GeminiLLM(BaseLLM):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
         from google.genai import types
 
-        prompt = build_prompt(question, contexts, history)
+        prompt = build_prompt(question, contexts, history, system)
         resp = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -131,8 +152,10 @@ class AnthropicLLM(BaseLLM):
         self.model = model
         self.max_tokens = max_tokens
 
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
-        messages = build_messages(question, contexts, history)
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
+        messages = build_messages(question, contexts, history, system)
         # Anthropic takes the system prompt as a top-level argument, so split it
         # out of the message list.
         system = next(
@@ -156,10 +179,12 @@ class OllamaLLM(BaseLLM):
         self.host = host.rstrip("/")
         self.temperature = temperature
 
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
         import requests
 
-        prompt = build_prompt(question, contexts, history)
+        prompt = build_prompt(question, contexts, history, system)
         resp = requests.post(
             f"{self.host}/api/generate",
             json={
@@ -210,8 +235,10 @@ class OpenAICompatibleLLM(BaseLLM):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def generate(self, question: str, contexts: List[str], history: str = "") -> str:
-        messages = build_messages(question, contexts, history)
+    def generate(
+        self, question: str, contexts: List[str], history: str = "", system: str = ""
+    ) -> str:
+        messages = build_messages(question, contexts, history, system)
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=messages,

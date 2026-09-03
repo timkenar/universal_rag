@@ -89,6 +89,64 @@ class VaultTests(unittest.TestCase):
             get_memory_backend(Config(memory_provider="bogus"))
 
 
+class IdentityTests(unittest.TestCase):
+    """Always-on identity / standing context — stdlib only, always runs."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.mem = ObsidianMemory(self.tmp)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_identity_is_persistent_context(self) -> None:
+        self.assertFalse(self.mem.has_identity())
+        self.mem.pin("You are JARVIS, an avionics assistant. The user is Timothy.")
+        self.assertTrue(self.mem.has_identity())
+        self.assertIn("JARVIS", self.mem.persistent_context())
+
+    def test_identity_updates_in_place(self) -> None:
+        self.mem.pin("Name is Alpha.")
+        self.mem.pin("Name is Beta.")  # overwrite, not append
+        ctx = self.mem.persistent_context()
+        self.assertIn("Beta", ctx)
+        self.assertNotIn("Alpha", ctx)
+
+    def test_identity_excluded_from_retrievable_notes(self) -> None:
+        self.mem.pin("You are JARVIS.")
+        self.mem.remember("What is the wingspan?", "35 metres.", [])
+        # The pinned identity must NOT be a retrievable/indexable note...
+        self.assertEqual(self.mem.count(), 1)
+        names = [p.name for p in self.mem.list_notes()]
+        self.assertFalse(any(n.startswith("_") for n in names))
+        # ...but it IS part of the always-injected standing context.
+        self.assertIn("JARVIS", self.mem.persistent_context())
+
+    def test_clear_identity(self) -> None:
+        self.mem.pin("You are JARVIS.")
+        self.assertTrue(self.mem.clear_identity())
+        self.assertFalse(self.mem.has_identity())
+        self.assertEqual(self.mem.persistent_context(), "")
+        self.assertFalse(self.mem.clear_identity())  # already gone
+
+    def test_identity_folds_into_system_prompt(self) -> None:
+        # The prompt builders must carry standing context into the system role.
+        from core.llm import SYSTEM_PROMPT, build_messages, build_prompt
+
+        identity = "You are JARVIS."
+        prompt = build_prompt("q?", ["ctx"], system=identity)
+        self.assertIn(identity, prompt)
+        self.assertIn(SYSTEM_PROMPT, prompt)
+
+        messages = build_messages("q?", ["ctx"], system=identity)
+        system_msg = next(m["content"] for m in messages if m["role"] == "system")
+        self.assertIn(identity, system_msg)
+        # Without a system arg, behaviour is unchanged (identity absent).
+        self.assertNotIn(identity, build_prompt("q?", ["ctx"]))
+
+
 @unittest.skipUnless(_HEAVY, "needs numpy + faiss + rank_bm25 (no torch required)")
 class PipelineMemoryTests(unittest.TestCase):
     """Full pipeline wiring with a stub embedder (no torch/model download)."""
@@ -192,6 +250,30 @@ class PipelineMemoryTests(unittest.TestCase):
             len(self.pipe.vector_store), with_two,
             "rebuild must remove vectors for the deleted memory note",
         )
+
+    def test_identity_reaches_the_llm_every_query(self) -> None:
+        # Capture what the pipeline passes to the LLM.
+        class CapturingLLM:
+            def __init__(self) -> None:
+                self.last_system = None
+
+            def generate(self, question, contexts, history="", system=""):
+                self.last_system = system
+                return "ok"
+
+        cap = CapturingLLM()
+        self.pipe.llm = cap
+        self.pipe.set_identity("You are JARVIS, the user is Timothy.")
+
+        # An unrelated, non-conversational query must still carry the identity.
+        self.pipe.query("what is the weather", use_memory=False)
+        self.assertIsNotNone(cap.last_system)
+        self.assertIn("JARVIS", cap.last_system)
+
+        # After clearing, the identity is gone from the system prompt.
+        self.pipe.clear_identity()
+        self.pipe.query("what is the weather", use_memory=False)
+        self.assertNotIn("JARVIS", cap.last_system or "")
 
     def test_rebuild_keeps_document_chunks(self) -> None:
         # Ingest the sample document, then a memory, then rebuild.

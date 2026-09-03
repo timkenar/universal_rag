@@ -133,6 +133,57 @@ class SupermemoryBackend(BaseMemoryBackend):
             hits.append(MemoryHit(text=str(text), score=score, source="supermemory"))
         return hits
 
+    # --- Standing context (identity / persona) ------------------------------
+    def pin(self, text: str, title: str = "identity") -> Optional[Path]:
+        text = (text or "").strip()
+        if not text:
+            return None
+        content = f"[{title}] {text}"
+        try:
+            self.client.add(
+                content,
+                container_tag=self.container,
+                metadata={"pinned": True, "title": title},
+            )
+        except TypeError:
+            self.client.add(content)
+        except Exception as exc:
+            warnings.warn(f"supermemory pin failed: {exc}")
+        return None
+
+    def persistent_context(self) -> str:
+        """Standing context from supermemory's user profile (static facts)."""
+        try:
+            prof = self.client.profile(container_tag=self.container)
+        except TypeError:
+            try:
+                prof = self.client.profile()
+            except Exception as exc:  # profile unsupported by this SDK/version
+                warnings.warn(f"supermemory profile unavailable: {exc}")
+                return ""
+        except Exception as exc:
+            warnings.warn(f"supermemory profile unavailable: {exc}")
+            return ""
+        return self._profile_text(prof)
+
+    @staticmethod
+    def _profile_text(prof: Any) -> str:
+        """Flatten a profile response (object/dict/list/str) into plain text."""
+        if prof is None:
+            return ""
+        if isinstance(prof, str):
+            return prof.strip()
+        for attr in ("profile", "static", "facts", "text", "summary", "data"):
+            val = getattr(prof, attr, None)
+            if val is None and isinstance(prof, dict):
+                val = prof.get(attr)
+            if val:
+                prof = val
+                break
+        if isinstance(prof, (list, tuple)):
+            return "\n".join(str(x) for x in prof if x).strip()
+        return str(prof).strip()
+
     def count(self) -> int:
         return -1  # external engine; count not cheaply available
 

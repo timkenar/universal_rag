@@ -134,6 +134,24 @@ python main.py query "Where is the avionics team?"   # answer cites a [memory] s
 python main.py memory rebuild
 ```
 
+### Two kinds of memory: *retrieved facts* vs *standing identity*
+
+The layer distinguishes **facts** (surfaced only when relevant to your question,
+via retrieval) from **standing context** — an identity/persona that is injected
+into **every** prompt's system message, regardless of the query. That's what lets
+you give the assistant an identity once and have it persist across sessions:
+
+```bash
+python main.py identity "You are JARVIS, an avionics co-pilot. The user is Timothy, a developer."
+python main.py identity                    # show the current identity
+python main.py identity --clear            # remove it
+```
+
+Identity notes are stored `_`-prefixed in the vault (e.g. `_identity.md`,
+still editable in Obsidian) and are **not** indexed/retrieved — they are always
+injected. Because there is no synthesis in extractive mode, the identity shapes
+answers only once a real `LLM_PROVIDER` is set (`anthropic`, `gemini`, …).
+
 Because FAISS is append-only, memories are **deduplicated on write** (one note
 per question) and pruning happens via `memory rebuild`, which reconstructs the
 index from the current vault. `status` shows `memory_provider` and `memory_notes`.
@@ -313,7 +331,7 @@ python main.py ingest files/   # re-ingest — see note below
 | [core/supermemory_backend.py](core/supermemory_backend.py) | External [supermemory](https://github.com/supermemoryai/supermemory) memory backend (recall injected into the prompt) |
 | [core/llm.py](core/llm.py) | `ExtractiveLLM` / `GeminiLLM` / `AnthropicLLM` / `OllamaLLM` / `OpenAICompatibleLLM` (OpenAI · NVIDIA · Groq · Together · OpenRouter) behind `BaseLLM` |
 | [rag/pipelines.py](rag/pipelines.py) | `RAGPipeline` — wires everything together |
-| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` / `serve` / `remember` / `memory` |
+| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` / `serve` / `remember` / `memory` / `identity` |
 | [api/server.py](api/server.py) | FastAPI adapter: serves the HUD + `POST /api/ask`, `GET /api/status` |
 | [web/jarvis.html](web/jarvis.html) | JARVIS voice HUD (Web Speech API, self-contained) |
 

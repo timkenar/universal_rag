@@ -102,6 +102,33 @@ def cmd_remember(pipeline: RAGPipeline, args) -> None:
         _print(f"Remembered → {note}")
 
 
+def cmd_identity(pipeline: RAGPipeline, args) -> None:
+    """Set / show / clear the always-on identity injected into every prompt."""
+    backend = pipeline.memory_backend
+    if backend is None:
+        _print("Memory is disabled (set MEMORY_PROVIDER=obsidian).")
+        return
+    if args.clear:
+        cleared = pipeline.clear_identity()
+        _print("Identity cleared." if cleared else "No identity was set.")
+        return
+    if args.text:
+        note = pipeline.set_identity(args.text)
+        where = f" → {note}" if note else ""
+        _print(f"Identity set{where}.")
+        if pipeline.config.llm_provider == "none":
+            _print(
+                "[dim]Note: LLM_PROVIDER=none (extractive) does not synthesize, so "
+                "the identity shapes answers only once a real LLM provider is set.[/dim]"
+                if _console else
+                "Note: with LLM_PROVIDER=none the identity has no visible effect; "
+                "set a real LLM provider for it to shape answers."
+            )
+        return
+    current = pipeline.identity()
+    _print(current if current.strip() else "No identity set.")
+
+
 def cmd_memory(pipeline: RAGPipeline, args) -> None:
     """List memories or rebuild the memory index after editing the vault."""
     backend = pipeline.memory_backend
@@ -161,6 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="list (default) the vault notes, or rebuild the memory index after editing them",
     )
     p_memory.set_defaults(func=cmd_memory)
+
+    p_identity = sub.add_parser(
+        "identity", help="Set/show/clear the always-on identity (persona) for the LLM"
+    )
+    p_identity.add_argument(
+        "text", nargs="?", help="Identity text to set (omit to show the current one)"
+    )
+    p_identity.add_argument("--clear", action="store_true", help="Clear the identity")
+    p_identity.set_defaults(func=cmd_identity)
 
     p_serve = sub.add_parser("serve", help="Serve the JARVIS HUD + REST API")
     p_serve.add_argument(

@@ -56,6 +56,15 @@ def _wikilink(source: str) -> str:
     return f"[[{Path(source).stem}]]"
 
 
+def _strip_frontmatter(text: str) -> str:
+    """Return a note's body, dropping a leading ``---`` YAML frontmatter block."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4:].lstrip("\n")
+    return text
+
+
 class ObsidianMemory(BaseMemoryBackend):
     """Durable memory as a folder of Obsidian markdown notes."""
 
@@ -112,10 +121,60 @@ class ObsidianMemory(BaseMemoryBackend):
         return []
 
     def list_notes(self) -> List[Path]:
-        return sorted(self.vault_dir.glob("*.md"))
+        # Pinned notes are `_`-prefixed: excluded here so they are never indexed
+        # or retrieved — they are always injected as standing context instead.
+        return sorted(
+            p for p in self.vault_dir.glob("*.md") if not p.name.startswith("_")
+        )
 
     def count(self) -> int:
         return len(self.list_notes())
+
+    # --- Standing context (identity / pinned facts) -------------------------
+    IDENTITY_FILE = "_identity.md"
+
+    def pin(self, text: str, title: str = "identity") -> Optional[Path]:
+        text = (text or "").strip()
+        if not text:
+            return None
+        if title.strip().lower() == "identity":
+            path = self.vault_dir / self.IDENTITY_FILE
+        else:
+            path = self.vault_dir / f"_pin-{_slugify(title)}.md"
+        updated = datetime.now().isoformat(timespec="seconds")
+        fm = [
+            "---",
+            "type: identity",
+            "pinned: true",
+            f"title: {title.strip()}",
+            f"updated: {updated}",
+            "---",
+            "",
+        ]
+        # Overwrite: identity/pinned context is meant to be updated in place.
+        path.write_text("\n".join(fm) + text + "\n", encoding="utf-8")
+        return path
+
+    def persistent_context(self) -> str:
+        # Sorted so `_identity.md` (standing persona) comes before `_pin-*` notes.
+        parts: List[str] = []
+        for path in sorted(self.vault_dir.glob("_*.md")):
+            body = _strip_frontmatter(
+                path.read_text(encoding="utf-8", errors="ignore")
+            ).strip()
+            if body:
+                parts.append(body)
+        return "\n\n".join(parts)
+
+    def clear_identity(self) -> bool:
+        path = self.vault_dir / self.IDENTITY_FILE
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+
+    def has_identity(self) -> bool:
+        return (self.vault_dir / self.IDENTITY_FILE).exists()
 
     def name(self) -> str:
         return "obsidian"

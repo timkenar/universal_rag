@@ -79,8 +79,18 @@ class RAGPipeline:
 
     # --- Querying -----------------------------------------------------------
     def query(self, question: str, use_memory: bool = False) -> Answer:
-        # Cache only stateless (non-conversational) queries.
-        if not use_memory:
+        # Standing context (identity/persona/pinned facts) injected into every
+        # prompt's system message, regardless of the query — this is what makes an
+        # identity persist across sessions rather than only surfacing when a
+        # retrieval happens to match it.
+        persistent = (
+            self.memory_backend.persistent_context() if self.memory_backend else ""
+        ).strip()
+
+        # Cache only stateless queries, and only when no standing context applies
+        # (identity influences the answer but isn't part of the cache key).
+        use_query_cache = not use_memory and not persistent
+        if use_query_cache:
             cached = self.cache.get(question)
             if cached is not None:
                 return Answer(question, cached["text"], [], cached=True)
@@ -93,6 +103,12 @@ class RAGPipeline:
 
         contexts = [r.chunk.text for r in results]
 
+        system = ""
+        if persistent:
+            system = (
+                "Standing memory about this assistant and user — always honour "
+                "it regardless of the retrieved context below:\n" + persistent
+            )
         # Durable memory held outside the shared index (e.g. supermemory) is
         # pulled in here and prepended as known facts. The offline vault backend
         # returns nothing — its notes already rank inside `results` above.
@@ -101,7 +117,7 @@ class RAGPipeline:
                 contexts.insert(0, hit.text)
 
         history = self.memory.format() if use_memory else ""
-        answer_text = self.llm.generate(question, contexts, history)
+        answer_text = self.llm.generate(question, contexts, history, system=system)
 
         if use_memory:
             self.memory.add(question, answer_text)
@@ -111,7 +127,7 @@ class RAGPipeline:
                     self.remember(question, answer_text, srcs)
                 except Exception as exc:  # never let memory-writing break a query
                     warnings.warn(f"Could not persist memory: {exc}")
-        else:
+        elif use_query_cache:
             self.cache.set(question, {"text": answer_text})
 
         return Answer(question, answer_text, results)
@@ -134,6 +150,19 @@ class RAGPipeline:
         if note is not None and backend.provides_index:
             self._index_memory_note(note)
         return note
+
+    def set_identity(self, text: str) -> Optional[Path]:
+        """Set the always-on identity/persona injected into every prompt."""
+        if self.memory_backend is None:
+            return None
+        return self.memory_backend.pin(text, "identity")
+
+    def clear_identity(self) -> bool:
+        return self.memory_backend.clear_identity() if self.memory_backend else False
+
+    def identity(self) -> str:
+        """The current standing context (identity + any pinned facts)."""
+        return self.memory_backend.persistent_context() if self.memory_backend else ""
 
     def _index_memory_note(self, note: Path) -> None:
         """Chunk a vault note and add it to the shared hybrid index."""
@@ -203,4 +232,5 @@ class RAGPipeline:
             "index_dir": str(self.config.index_dir),
             "memory_provider": self.memory_backend.name() if self.memory_backend else "none",
             "memory_notes": self.memory_backend.count() if self.memory_backend else 0,
+            "identity_set": self.memory_backend.has_identity() if self.memory_backend else False,
         }
