@@ -227,12 +227,32 @@ class PipelineMemoryTests(unittest.TestCase):
             "the memory note should surface through hybrid retrieval",
         )
 
-    def test_autosave_on_chat_turn(self) -> None:
-        notes_before = self.pipe.memory_backend.count()
-        self.pipe.query("What colour is the sky in the demo?", use_memory=True)
+    def test_autosave_persists_every_query(self) -> None:
+        # A real (non-extractive) LLM so autosave is not gated off.
+        class FakeLLM:
+            def generate(self, question, contexts, history="", system=""):
+                return f"Synthesized answer to: {question}"
+
+        self.pipe.llm = FakeLLM()
+
+        before = self.pipe.memory_backend.count()
+        # One-shot query (use_memory=False) must persist too, not just chat.
+        self.pipe.query("What colour is the sky in the demo?", use_memory=False)
         self.assertEqual(
-            self.pipe.memory_backend.count(), notes_before + 1,
-            "a chat turn should auto-persist one memory note",
+            self.pipe.memory_backend.count(), before + 1,
+            "a one-shot query should auto-persist a memory note",
+        )
+        # A chat turn persists as well.
+        self.pipe.query("And what colour is the grass?", use_memory=True)
+        self.assertEqual(self.pipe.memory_backend.count(), before + 2)
+
+    def test_extractive_answers_are_not_autosaved(self) -> None:
+        # Default pipeline uses the offline extractive LLM -> nothing persisted.
+        before = self.pipe.memory_backend.count()
+        self.pipe.query("anything at all", use_memory=True)
+        self.assertEqual(
+            self.pipe.memory_backend.count(), before,
+            "extractive (no-LLM) answers should be skipped by autosave",
         )
 
     def test_rebuild_prunes_deleted_notes(self) -> None:

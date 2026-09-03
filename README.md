@@ -257,7 +257,7 @@ All knobs live in [config.py](config.py) and can be overridden by environment va
 | `use_reranker` | `True` | cross-encoder rerank on/off |
 | `memory_window` | 5 | turns kept in ephemeral chat memory |
 | `memory_provider` | `obsidian` | durable memory: `obsidian` · `supermemory` · `none` |
-| `memory_autosave` | `True` | auto-save each chat turn as a memory |
+| `memory_autosave` | `True` | auto-save every answered query/chat as a memory (skipped offline) |
 | `vault_dir` | `./memory_vault` | Obsidian vault for memory notes |
 
 ### Choosing an LLM provider (no code changes)
@@ -355,3 +355,19 @@ python main.py ingest files/   # re-ingest — see note below
    calibration needed.
 4. The fused shortlist is re-scored by a **cross-encoder** that reads (query, passage) jointly.
 5. The top passages become the LLM context; the answer cites them as `[n]`.
+
+---
+
+## Contributing
+
+Contributions are welcome — this project is intentionally modular so new pieces slot in without
+touching the rest. Good first extensions live under **Extending** above (new loaders, providers,
+vector stores, or memory backends). Please open an issue or pull request; keep changes provider-
+swappable and offline-first by default, and add/adjust tests under [tests/](tests/) where it makes
+sense (`python -m unittest discover tests`).
+
+## License
+
+Released under the **MIT License** — see [LICENSE](LICENSE). You're free to use, modify, and
+distribute it, including commercially, provided the copyright notice is retained. Contributions
+are accepted under the same license.

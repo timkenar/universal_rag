@@ -101,7 +101,8 @@ class Config:
     # memory_provider: "obsidian" (offline markdown vault, default) |
     #   "supermemory" (external engine) | "none"
     memory_provider: str = os.getenv("MEMORY_PROVIDER", "obsidian")
-    # Auto-persist each answered chat turn as a memory.
+    # Auto-persist every answered query/chat as a memory (skipped in offline
+    # extractive mode, whose answers just echo indexed documents).
     memory_autosave: bool = _env_bool("MEMORY_AUTOSAVE", True)
     # Memory hits injected into the prompt by external (non-indexed) backends.
     top_k_memory: int = 3

@@ -21,7 +21,7 @@ from core.cache import QueryCache
 from core.document_processor import Chunk, DocumentProcessor
 from core.embeddings import get_embedder
 from core.hybrid_search import HybridRetriever, RetrievalResult
-from core.llm import get_llm
+from core.llm import ExtractiveLLM, get_llm
 from core.memory import ConversationMemory
 from core.memory_backend import get_memory_backend
 from core.reranker import get_reranker
@@ -119,15 +119,21 @@ class RAGPipeline:
         history = self.memory.format() if use_memory else ""
         answer_text = self.llm.generate(question, contexts, history, system=system)
 
+        # Ephemeral within-session window: chat only.
         if use_memory:
             self.memory.add(question, answer_text)
-            if self.config.memory_autosave:
-                srcs = [r.chunk.metadata.get("filename", "") for r in results]
-                try:
-                    self.remember(question, answer_text, srcs)
-                except Exception as exc:  # never let memory-writing break a query
-                    warnings.warn(f"Could not persist memory: {exc}")
-        elif use_query_cache:
+
+        # Durable memory: persist for EVERY interaction — one-shot `query` and
+        # `chat` alike — so learned facts accumulate across all sessions no matter
+        # how you ask. Persisted to disk (vault note + index), reloaded next run.
+        if self.config.memory_autosave and self._worth_remembering(answer_text):
+            srcs = [r.chunk.metadata.get("filename", "") for r in results]
+            try:
+                self.remember(question, answer_text, srcs)
+            except Exception as exc:  # never let memory-writing break a query
+                warnings.warn(f"Could not persist memory: {exc}")
+
+        if use_query_cache:
             self.cache.set(question, {"text": answer_text})
 
         return Answer(question, answer_text, results)
@@ -150,6 +156,19 @@ class RAGPipeline:
         if note is not None and backend.provides_index:
             self._index_memory_note(note)
         return note
+
+    def _worth_remembering(self, answer_text: str) -> bool:
+        """Gate autosave: skip empty answers and offline extractive output.
+
+        The extractive LLM (``LLM_PROVIDER=none``) returns raw passage dumps that
+        just echo documents already in the index, so persisting them adds noise,
+        not knowledge. A real LLM's synthesized answers are worth remembering.
+        """
+        if not answer_text or not answer_text.strip():
+            return False
+        if isinstance(self.llm, ExtractiveLLM):
+            return False
+        return True
 
     def set_identity(self, text: str) -> Optional[Path]:
         """Set the always-on identity/persona injected into every prompt."""
