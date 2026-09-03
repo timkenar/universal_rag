@@ -7,6 +7,7 @@ with a query cache and conversation memory around it.
 from __future__ import annotations
 
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -22,6 +23,7 @@ from core.embeddings import get_embedder
 from core.hybrid_search import HybridRetriever, RetrievalResult
 from core.llm import get_llm
 from core.memory import ConversationMemory
+from core.memory_backend import get_memory_backend
 from core.reranker import get_reranker
 from core.vector_store import VectorStore
 
@@ -51,7 +53,10 @@ class RAGPipeline:
         )
         self.reranker = get_reranker(self.config)
         self.llm = get_llm(self.config)
+        # Ephemeral within-session chat window ...
         self.memory = ConversationMemory(self.config.memory_window)
+        # ... and the durable cross-session memory layer (may be None).
+        self.memory_backend = get_memory_backend(self.config)
         self.cache = QueryCache(
             self.config.cache_dir, self.config.signature(), self.config.use_cache
         )
@@ -87,15 +92,103 @@ class RAGPipeline:
             results = results[: self.config.top_k_final]
 
         contexts = [r.chunk.text for r in results]
+
+        # Durable memory held outside the shared index (e.g. supermemory) is
+        # pulled in here and prepended as known facts. The offline vault backend
+        # returns nothing — its notes already rank inside `results` above.
+        if self.memory_backend is not None:
+            for hit in self.memory_backend.recall(question, self.config.top_k_memory):
+                contexts.insert(0, hit.text)
+
         history = self.memory.format() if use_memory else ""
         answer_text = self.llm.generate(question, contexts, history)
 
         if use_memory:
             self.memory.add(question, answer_text)
+            if self.config.memory_autosave:
+                srcs = [r.chunk.metadata.get("filename", "") for r in results]
+                try:
+                    self.remember(question, answer_text, srcs)
+                except Exception as exc:  # never let memory-writing break a query
+                    warnings.warn(f"Could not persist memory: {exc}")
         else:
             self.cache.set(question, {"text": answer_text})
 
         return Answer(question, answer_text, results)
+
+    # --- Durable memory -----------------------------------------------------
+    def remember(
+        self, question: str, answer_text: str, sources: Optional[List[str]] = None
+    ) -> Optional[Path]:
+        """Persist a memory via the configured backend.
+
+        For index-backed backends (the offline vault) the written note is chunked
+        and added to the shared FAISS + BM25 store so it surfaces in future
+        retrievals. Returns the note path, or ``None`` (disabled / duplicate /
+        external backend).
+        """
+        backend = self.memory_backend
+        if backend is None:
+            return None
+        note = backend.remember(question, answer_text, sources or [])
+        if note is not None and backend.provides_index:
+            self._index_memory_note(note)
+        return note
+
+    def _index_memory_note(self, note: Path) -> None:
+        """Chunk a vault note and add it to the shared hybrid index."""
+        chunks = self.processor.process_file(Path(note))
+        if not chunks:
+            return
+        for chunk in chunks:
+            chunk.metadata["type"] = "memory"
+        vectors = self.embedder.embed_documents([c.text for c in chunks])
+        self.vector_store.add(chunks, vectors)
+        self.bm25_store.add(chunks)
+        self._persist()
+
+    def rebuild_memory(self) -> int:
+        """Re-index the vault after edits/deletions in Obsidian (the prune path).
+
+        FAISS ``IndexFlatIP`` has no per-vector delete, so this rebuilds the dense
+        + sparse stores keeping only non-memory chunks, then re-indexes every
+        current vault note. Returns the number of notes re-indexed. No-op for
+        external backends. """
+        backend = self.memory_backend
+        if backend is None or not backend.provides_index:
+            return 0
+        self._drop_memory_chunks()
+        notes = backend.list_notes()
+        for note in notes:
+            self._index_memory_note(note)
+        self._persist()
+        return len(notes)
+
+    def _drop_memory_chunks(self) -> None:
+        """Rebuild dense + sparse stores keeping only non-memory chunks."""
+        import numpy as np
+
+        store = self.vector_store
+        keep = [i for i, c in enumerate(store.chunks)
+                if c.metadata.get("type") != "memory"]
+        kept_chunks = [store.chunks[i] for i in keep]
+
+        fresh = VectorStore(self.embedder.dim)
+        if keep and store.index.ntotal:
+            # IndexFlatIP supports reconstruct: pull the kept (normalized) vectors
+            # back out and re-add them to a fresh index.
+            all_vecs = np.asarray(store.index.reconstruct_n(0, store.index.ntotal))
+            fresh.add(kept_chunks, all_vecs[keep])
+        self.vector_store = fresh
+
+        fresh_bm = BM25Store()
+        fresh_bm.add(kept_chunks)
+        self.bm25_store = fresh_bm
+
+        # Rewire the retriever to the fresh stores.
+        self.retriever = HybridRetriever(
+            self.embedder, self.vector_store, self.bm25_store, self.config
+        )
 
     # --- Introspection ------------------------------------------------------
     def status(self) -> dict:
@@ -108,4 +201,6 @@ class RAGPipeline:
             "sparse_docs": len(self.bm25_store),
             "reranker": bool(self.reranker),
             "index_dir": str(self.config.index_dir),
+            "memory_provider": self.memory_backend.name() if self.memory_backend else "none",
+            "memory_notes": self.memory_backend.count() if self.memory_backend else 0,
         }

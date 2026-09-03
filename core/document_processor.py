@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -38,12 +39,101 @@ class Chunk:
 # into every chunk produced from the file.
 # ---------------------------------------------------------------------------
 
+# Minimum characters a page's text layer must have before we trust it and skip
+# OCR. Scanned pages typically return "" or a few stray glyphs.
+_OCR_MIN_CHARS = 20
+
+# OCR toggle, read once from the environment so loaders (which take only a path)
+# can see it. "auto" (default) OCRs only pages with no usable text layer;
+# "off" disables OCR entirely; "force" OCRs every page.
+_OCR_MODE = os.getenv("OCR_MODE", "auto").lower()
+
+
+def _ocr_available() -> bool:
+    try:
+        import pytesseract  # noqa: F401
+        from pdf2image import convert_from_path  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _ocr_image(image) -> str:
+    """Run Tesseract on a PIL image; empty string on any failure."""
+    try:
+        import pytesseract
+
+        return pytesseract.image_to_string(image) or ""
+    except Exception as exc:  # tesseract binary missing, etc.
+        warnings.warn(f"OCR failed: {exc}")
+        return ""
+
+
 def _load_pdf(path: Path) -> Tuple[str, dict]:
+    """Extract the text layer; fall back to OCR on pages that lack one.
+
+    Digital PDFs read instantly via pypdf. Scanned PDFs (image-only pages) have
+    no text layer, so — unless OCR_MODE=off — each empty page is rendered to an
+    image and passed through Tesseract. Set OCR_MODE=force to OCR every page.
+    """
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
     pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n\n".join(pages), {"pages": len(pages)}
+
+    want_ocr = _OCR_MODE != "off"
+    needs_ocr = [
+        i for i, txt in enumerate(pages)
+        if _OCR_MODE == "force" or len(txt.strip()) < _OCR_MIN_CHARS
+    ]
+
+    ocr_pages = 0
+    if want_ocr and needs_ocr:
+        if not _ocr_available():
+            warnings.warn(
+                f"'{path.name}' has {len(needs_ocr)} page(s) with no text layer "
+                "(likely scanned), but OCR deps are missing. Install "
+                "'pytesseract' + 'pdf2image' and the system 'tesseract-ocr' & "
+                "'poppler' packages. Skipping those pages."
+            )
+        else:
+            from pdf2image import convert_from_path
+
+            # Render only the pages that need OCR (1-based page numbers).
+            for i in needs_ocr:
+                try:
+                    images = convert_from_path(
+                        str(path), first_page=i + 1, last_page=i + 1, dpi=300
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Could not render page {i + 1} of {path.name}: {exc}")
+                    continue
+                if images:
+                    text = _ocr_image(images[0]).strip()
+                    if text:
+                        pages[i] = text
+                        ocr_pages += 1
+
+    return "\n\n".join(pages), {"pages": len(pages), "ocr_pages": ocr_pages}
+
+
+def _load_image(path: Path) -> Tuple[str, dict]:
+    """OCR a standalone image file (scanned page, screenshot, photo)."""
+    if _OCR_MODE == "off" or not _ocr_available():
+        warnings.warn(
+            f"'{path.name}' is an image; OCR is required to read it. Install "
+            "'pytesseract' + 'Pillow' and the system 'tesseract-ocr' package."
+        )
+        return "", {"ocr_pages": 0}
+    from PIL import Image
+
+    try:
+        text = _ocr_image(Image.open(path)).strip()
+    except Exception as exc:
+        warnings.warn(f"Could not open image {path.name}: {exc}")
+        return "", {"ocr_pages": 0}
+    return text, {"ocr_pages": 1 if text else 0}
 
 
 def _load_text(path: Path) -> Tuple[str, dict]:
@@ -88,12 +178,16 @@ _TEXT_EXTS = [
     ".json", ".yaml", ".yml", ".toml", ".ini", ".sh",
 ]
 
+# Image formats read via OCR.
+_IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".gif", ".webp"]
+
 LOADERS: Dict[str, Callable[[Path], Tuple[str, dict]]] = {
     ".pdf": _load_pdf,
     ".html": _load_html,
     ".htm": _load_html,
     ".csv": _load_csv,
     ".docx": _load_docx,
+    **{ext: _load_image for ext in _IMAGE_EXTS},
     **{ext: _load_text for ext in _TEXT_EXTS},
 }
 

@@ -8,8 +8,9 @@ It follows the classic production RAG pipeline used by LlamaIndex / LangChain / 
 ```
 files ──▶ loaders ──▶ chunking ──▶ embeddings ──┐
                                                  ├─▶ hybrid retrieval (RRF) ──▶ rerank ──▶ LLM ──▶ answer
-             BM25 sparse index ──────────────────┘         ▲                                  ▲
+             BM25 sparse index ──────────────────┘         ▲                                  ▲   │
                                                        query cache                    conversation memory
+   memory vault (Obsidian .md) ──▶ indexed into the same hybrid store ◀── learned facts ◀──────────┘
 ```
 
 **Universal** in three senses:
@@ -22,17 +23,30 @@ files ──▶ loaders ──▶ chunking ──▶ embeddings ──┐
 ## Setup
 
 ```bash
-# 1. Create and activate a virtual environment
+# 1. System packages for OCR (scanned PDFs & images) — install BEFORE pip
+#    Debian/Ubuntu:
+sudo apt install tesseract-ocr poppler-utils
+#    macOS (Homebrew):   brew install tesseract poppler
+#    Windows:            install the Tesseract & Poppler binaries and add them to PATH
+#    (Skip this step if you only ever ingest digital PDFs / text — see note below.)
+
+# 2. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 
 # (optional) enable Gemini or Ollama providers
 pip install google-genai      # for Gemini
 pip install requests          # for Ollama
 ```
+
+> **OCR system packages:** `tesseract-ocr` (the OCR engine) and `poppler-utils` (renders PDF
+> pages to images) are **not** pip packages — they must be installed at the OS level as shown
+> above. Without them, digital PDFs and text still work fine, but **scanned PDFs and image files
+> are skipped** (with a warning). Set `OCR_MODE=off` to disable OCR entirely, or `force` to OCR
+> every page.
 
 > **First run** downloads the local embedding model (`all-MiniLM-L6-v2`, ~90 MB) and the
 > cross-encoder reranker (~80 MB) from Hugging Face. Needs internet **once**, then fully offline.
@@ -96,9 +110,56 @@ panel toggles, clear log, mute, diagnostics) stay in the browser and never hit t
 
 ---
 
+## Memory layer (persistent, cross-session)
+
+Beyond the ephemeral chat window, the system has a **durable memory layer** that
+persists facts learned in conversation and resurfaces them in future sessions,
+ranked alongside your documents. It is provider-swappable (`MEMORY_PROVIDER`),
+just like embeddings and the LLM:
+
+| Provider | What it is | Offline? | Data location |
+|---|---|---|---|
+| `obsidian` *(default)* | Learned facts written as **Obsidian markdown notes** (YAML frontmatter + `[[wikilinks]]` + `#tags`) in a vault folder, then embedded into the **same** FAISS+BM25 index | ✅ pure Python, in-process | `./memory_vault/` — open & edit in Obsidian |
+| `supermemory` | The external [supermemory](https://github.com/supermemoryai/supermemory) engine (auto fact-extraction, temporal handling, contradiction resolution). Injects recalled facts into the prompt | ⚠️ self-host on `:6767`, or ❌ cloud | its own store / the cloud |
+| `none` | Memory disabled | — | — |
+
+```bash
+# Default (Obsidian): chat turns are auto-saved as notes and become retrievable.
+python main.py chat                       # ask something, exit
+python main.py memory                     # list the vault notes
+python main.py remember "The avionics team is based in Nairobi."   # seed a fact
+python main.py query "Where is the avionics team?"   # answer cites a [memory] source
+
+# After editing/deleting notes in Obsidian, re-sync the index (prune path):
+python main.py memory rebuild
+```
+
+Because FAISS is append-only, memories are **deduplicated on write** (one note
+per question) and pruning happens via `memory rebuild`, which reconstructs the
+index from the current vault. `status` shows `memory_provider` and `memory_notes`.
+
+**Switching to supermemory** (opt-in, `pip install supermemory`):
+
+```bash
+# Self-hosted (data stays local):
+npx supermemory local                                  # starts http://localhost:6767
+export MEMORY_PROVIDER=supermemory SUPERMEMORY_BASE_URL=http://localhost:6767
+
+# Cloud (data leaves the machine — warns at startup):
+export MEMORY_PROVIDER=supermemory SUPERMEMORY_API_KEY=your-key
+```
+
+> Design notes and the full rollout/upgrade path live in
+> [docs/memory-layer-plan.md](docs/memory-layer-plan.md).
+
+---
+
 ## Testing
 
-There is no automated test suite yet — verification is a manual smoke test in two layers: the
+The memory layer ships with unit tests (`python -m unittest tests.test_memory_layer -v`);
+the vault/dedup tier runs on the standard library alone, and the full-pipeline tier runs once
+the deps below are installed (no torch needed — it uses a stub embedder). Everything else is a
+manual smoke test in two layers: the
 **CLI pipeline** first (retrieval → rerank → LLM), then the **HUD + API** on top. Everything below
 runs fully offline on the defaults (`LLM_PROVIDER=none`), so no API key is needed.
 
@@ -169,26 +230,68 @@ All knobs live in [config.py](config.py) and can be overridden by environment va
 | Setting | Default | Notes |
 |---|---|---|
 | `EMBEDDING_PROVIDER` | `local` | `local` (sentence-transformers, 384-d) or `gemini` (3072-d) |
-| `LLM_PROVIDER` | `none` | `none` = extractive answers w/ citations; or `gemini` / `ollama` |
+| `LLM_PROVIDER` | `none` | `none` (offline extractive) · `gemini` · `anthropic` · `ollama` · `openai` · `nvidia` · `groq` · `together` · `openrouter` |
 | `chunk_size` / `chunk_overlap` | 512 / 64 | characters |
 | `top_k_dense` / `top_k_sparse` | 10 / 10 | candidates from each retriever |
 | `top_k_hybrid` | 10 | kept after RRF fusion |
 | `top_k_final` | 5 | kept after reranking |
 | `rrf_k` | 60 | RRF fusion constant |
 | `use_reranker` | `True` | cross-encoder rerank on/off |
-| `memory_window` | 5 | turns kept in chat memory |
+| `memory_window` | 5 | turns kept in ephemeral chat memory |
+| `memory_provider` | `obsidian` | durable memory: `obsidian` · `supermemory` · `none` |
+| `memory_autosave` | `True` | auto-save each chat turn as a memory |
+| `vault_dir` | `./memory_vault` | Obsidian vault for memory notes |
 
-### Switching to Gemini (no code changes)
+### Choosing an LLM provider (no code changes)
+
+The LLM is fully pluggable — pick one via `LLM_PROVIDER`, name the model, and set the matching API
+key. **OpenAI, NVIDIA, Groq, Together, and OpenRouter all share the OpenAI Chat Completions API**,
+so one adapter ([`OpenAICompatibleLLM`](core/llm.py)) handles them all — they differ only by base
+URL (auto-selected from the provider name) and key. **Anthropic (Claude)** uses its own Messages
+API, so it has a dedicated [`AnthropicLLM`](core/llm.py) adapter built on the official `anthropic`
+SDK — with its own model name (`ANTHROPIC_MODEL`, default `claude-opus-4-8`).
+
+```bash
+pip install openai        # once, for any OpenAI-compatible provider
+pip install anthropic     # once, for Claude
+
+# Anthropic / Claude
+export LLM_PROVIDER=anthropic   ANTHROPIC_MODEL=claude-opus-4-8   ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI
+export LLM_PROVIDER=openai   LLM_MODEL=gpt-4o-mini            OPENAI_API_KEY=sk-...
+
+# NVIDIA — https://build.nvidia.com/models
+export LLM_PROVIDER=nvidia   LLM_MODEL=meta/llama-3.1-70b-instruct   NVIDIA_API_KEY=nvapi-...
+
+# Groq / Together / OpenRouter — same pattern, their own *_API_KEY
+export LLM_PROVIDER=groq     LLM_MODEL=llama-3.3-70b-versatile       GROQ_API_KEY=...
+
+# Google Gemini
+export LLM_PROVIDER=gemini   LLM_MODEL=gemini-2.0-flash              GEMINI_API_KEY=...
+
+# Local — Ollama (native) or any OpenAI-compatible server (vLLM, LM Studio)
+export LLM_PROVIDER=ollama   OLLAMA_MODEL=llama3.2
+export LLM_PROVIDER=openai   OPENAI_BASE_URL=http://localhost:8000/v1  OPENAI_API_KEY=x
+
+python main.py query "..."   # then run as usual
+```
+
+For an endpoint not in the preset list, use `LLM_PROVIDER=openai` and point `OPENAI_BASE_URL` at
+it. To add a new **named** provider, drop its base URL into `OPENAI_COMPATIBLE_BASE_URLS` in
+[config.py](config.py) and add the name to the set in `get_llm` — no new class needed.
+
+### Switching embeddings to Gemini
 
 ```bash
 export GEMINI_API_KEY="your-key"
 export EMBEDDING_PROVIDER=gemini
-export LLM_PROVIDER=gemini
-python main.py query "..."
+python main.py ingest files/   # re-ingest — see note below
 ```
 
 > Note: changing the embedding provider changes the vector dimension, so **re-ingest** into a
 > fresh `storage/index/` after switching (delete the folder or point `index_dir` elsewhere).
+> Changing only the **LLM** provider needs no re-ingest — retrieval is unaffected.
 
 ---
 
@@ -204,10 +307,13 @@ python main.py query "..."
 | [core/hybrid_search.py](core/hybrid_search.py) | Reciprocal Rank Fusion of dense + sparse |
 | [core/reranker.py](core/reranker.py) | Cross-encoder re-ranking of the shortlist |
 | [core/cache.py](core/cache.py) | Disk-backed query→answer cache (config-signature keyed) |
-| [core/memory.py](core/memory.py) | Sliding-window conversation memory |
-| [core/llm.py](core/llm.py) | `ExtractiveLLM` / `GeminiLLM` / `OllamaLLM` behind `BaseLLM` |
+| [core/memory.py](core/memory.py) | Sliding-window conversation memory (ephemeral, within-session) |
+| [core/memory_backend.py](core/memory_backend.py) | `BaseMemoryBackend` interface + `get_memory_backend` factory for durable memory |
+| [core/obsidian_memory.py](core/obsidian_memory.py) | Offline Obsidian-vault memory backend (markdown notes indexed into the hybrid store) |
+| [core/supermemory_backend.py](core/supermemory_backend.py) | External [supermemory](https://github.com/supermemoryai/supermemory) memory backend (recall injected into the prompt) |
+| [core/llm.py](core/llm.py) | `ExtractiveLLM` / `GeminiLLM` / `AnthropicLLM` / `OllamaLLM` / `OpenAICompatibleLLM` (OpenAI · NVIDIA · Groq · Together · OpenRouter) behind `BaseLLM` |
 | [rag/pipelines.py](rag/pipelines.py) | `RAGPipeline` — wires everything together |
-| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` / `serve` |
+| [main.py](main.py) | CLI: `ingest` / `query` / `chat` / `status` / `serve` / `remember` / `memory` |
 | [api/server.py](api/server.py) | FastAPI adapter: serves the HUD + `POST /api/ask`, `GET /api/status` |
 | [web/jarvis.html](web/jarvis.html) | JARVIS voice HUD (Web Speech API, self-contained) |
 

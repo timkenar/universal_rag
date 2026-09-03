@@ -18,6 +18,16 @@ python-docx>=1.1              # DOCX loader
 # --- Optional: query cache backend (falls back to stdlib shelve if absent) ---
 diskcache>=5.6
 
+# --- Optional: OCR for scanned PDFs & image files ---
+# Also requires system packages: `tesseract-ocr` and `poppler`
+#   Debian/Ubuntu:  sudo apt install tesseract-ocr poppler-utils
+#   macOS (brew):   brew install tesseract poppler
+pytesseract>=0.3.10          # Tesseract OCR wrapper
+pdf2image>=1.17              # render PDF pages to images for OCR
+Pillow>=10.0                 # image handling for OCR
+
 # --- Optional: providers (uncomment to enable) ---
 # google-genai>=0.3            # Gemini embeddings + LLM (needs GEMINI_API_KEY)
+# anthropic>=0.40              # Claude LLM (needs ANTHROPIC_API_KEY)
+# openai>=1.30                 # OpenAI, NVIDIA, Groq, Together, OpenRouter, vLLM, ...
 # requests>=2.31               # Ollama LLM (needs a local Ollama server)

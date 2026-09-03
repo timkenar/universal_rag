@@ -43,7 +43,8 @@ def _show_answer(answer: Answer) -> None:
         for i, r in enumerate(answer.sources, start=1):
             src = r.chunk.metadata.get("filename", "?")
             idx = r.chunk.metadata.get("chunk_index", "?")
-            _print(f"  [{i}] {src} (chunk {idx})  score={r.score:.4f}")
+            tag = "[memory] " if r.chunk.metadata.get("type") == "memory" else ""
+            _print(f"  [{i}] {tag}{src} (chunk {idx})  score={r.score:.4f}")
 
 
 def cmd_ingest(pipeline: RAGPipeline, args) -> None:
@@ -86,6 +87,40 @@ def cmd_status(pipeline: RAGPipeline, args) -> None:
         _print(f"  {key:20s}: {value}")
 
 
+def cmd_remember(pipeline: RAGPipeline, args) -> None:
+    """Manually store a fact in the durable memory layer."""
+    backend = pipeline.memory_backend
+    if backend is None:
+        _print("Memory is disabled (set MEMORY_PROVIDER=obsidian).")
+        return
+    note = pipeline.remember(args.text, args.text, [])
+    if not backend.provides_index:
+        _print(f"Sent to {backend.name()}.")
+    elif note is None:
+        _print("Already remembered (duplicate) — nothing to do.")
+    else:
+        _print(f"Remembered → {note}")
+
+
+def cmd_memory(pipeline: RAGPipeline, args) -> None:
+    """List memories or rebuild the memory index after editing the vault."""
+    backend = pipeline.memory_backend
+    if backend is None:
+        _print("Memory is disabled (set MEMORY_PROVIDER=obsidian).")
+        return
+    if args.action == "rebuild":
+        n = pipeline.rebuild_memory()
+        _print(f"Rebuilt memory index from {n} vault note(s).")
+        return
+    notes = backend.list_notes()
+    if not notes:
+        _print(f"No memories yet ({backend.name()}).")
+        return
+    _print(f"{len(notes)} memory note(s) in {pipeline.config.vault_dir}:")
+    for path in notes:
+        _print(f"  - {path.name}")
+
+
 def cmd_serve(pipeline: RAGPipeline, args) -> None:
     """Boot the FastAPI app that serves the JARVIS HUD + REST API.
 
@@ -115,6 +150,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="Show index / provider info")
     p_status.set_defaults(func=cmd_status)
+
+    p_remember = sub.add_parser("remember", help="Store a fact in durable memory")
+    p_remember.add_argument("text", help="The fact to remember")
+    p_remember.set_defaults(func=cmd_remember)
+
+    p_memory = sub.add_parser("memory", help="List memories or rebuild the memory index")
+    p_memory.add_argument(
+        "action", nargs="?", choices=["list", "rebuild"], default="list",
+        help="list (default) the vault notes, or rebuild the memory index after editing them",
+    )
+    p_memory.set_defaults(func=cmd_memory)
 
     p_serve = sub.add_parser("serve", help="Serve the JARVIS HUD + REST API")
     p_serve.add_argument(

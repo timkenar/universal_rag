@@ -67,6 +67,7 @@ def _serialize_sources(answer: Answer) -> list[dict[str, Any]]:
             "filename": r.chunk.metadata.get("filename", "?"),
             "chunk_index": r.chunk.metadata.get("chunk_index", "?"),
             "score": round(float(r.score), 4),
+            "memory": r.chunk.metadata.get("type") == "memory",
         }
         for r in answer.sources
     ]
